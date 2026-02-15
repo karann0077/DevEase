@@ -234,5 +234,4 @@ A web-based AI Developer Assistant that:
 
 ## Notes for maintainers
 - Keep this `requirements.md` as the authoritative specification and update it with status markers (e.g., "Implemented: FR-003") as features complete.  
-- Link `design.md` for architecture diagrams and `prompts.md` for LLM prompt templates and examples.  
-- Record model versions and prompt templates used per output in audit logs for traceability.
+
