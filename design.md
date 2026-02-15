@@ -1,731 +1,257 @@
-# Design Document: AI for Bharat – Smart Documentation & Debugging Assistant
+# design.md
 
-## Overview
+# DevInsight AI — System Design Document
 
-The AI for Bharat Smart Documentation & Debugging Assistant is a microservices-based system that combines static code analysis, AI-powered language models, and multilingual NLP to provide intelligent debugging assistance, automatic documentation generation, and educational support for developers across India. The system architecture prioritizes scalability, language flexibility, and real-time responsiveness.
+## 1. Project summary
+DevInsight AI is a web-based platform that helps developers understand codebases faster and resolve runtime issues with confidence. It combines automatic documentation generation and powerful debugging aids (stacktrace correlation, minimal repro creation, runtime replay, and sandbox-validated patches) into a single workflow. The emphasis is on reproducibility, evidence-backed fixes, and human-in-the-loop safety.
 
-## Architecture
+## 2. Objectives and measurable targets
+- Produce readable, context-accurate docstrings and README drafts for selected code units.  
+- Convert a raw stacktrace + logs into a ranked set of candidate code locations with ≥70% accuracy on demo cases.  
+- Generate and verify patches in an isolated environment; aim for a sandbox-pass rate ≥65% on curated examples.  
+- Shrink large failing inputs to compact repros automatically (ddmin-like heuristics).  
+- Provide auditable, redacted prompts and outputs for compliance.
 
-### High-Level Architecture
+## 3. System overview (high level)
+Users interact through a single-page web UI. Primary flows:
+1. Repo ingest & indexing → builds semantic search index and symbol map.  
+2. Documentation flow → select code → request explanation/docstring → preview & insert patch.  
+3. Debugging flow → paste stacktrace/log/screenshot → ranked candidates → propose patch → run sandbox → present results and confidence.  
 
-The system follows a microservices architecture with the following main components:
+Core subsystems:
+- Frontend UI
+- API layer
+- Indexing & retrieval (vector store)
+- LLM orchestration (RAG)
+- Sandbox execution cluster
+- Background workers (queue)
+- Persistent stores (metadata, artifacts, embeddings)
+- Auditing & observability
+
+## 4. Logical architecture
+## System Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         API Gateway                              │
-│                    (Authentication & Routing)                    │
-└────────────┬────────────────────────────────────────────────────┘
-             │
-    ┌────────┴────────┬──────────────┬──────────────┬─────────────┐
-    │                 │              │              │             │
-┌───▼────┐    ┌──────▼─────┐  ┌────▼─────┐  ┌────▼─────┐  ┌───▼────┐
-│ Code   │    │ AI Debug   │  │ Doc Gen  │  │ GitHub   │  │ Multi  │
-│Analysis│    │ Service    │  │ Service  │  │ Service  │  │ lingual│
-│Service │    │            │  │          │  │          │  │ Service│
-└───┬────┘    └──────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘
-    │                │              │              │             │
-    └────────┬───────┴──────────────┴──────────────┴─────────────┘
-             │
-    ┌────────▼────────────────────────────────────────────┐
-    │              Message Queue (RabbitMQ)               │
-    └────────┬────────────────────────────────────────────┘
-             │
-    ┌────────▼────────┬──────────────┬──────────────┐
-    │                 │              │              │
-┌───▼────────┐  ┌────▼─────┐  ┌────▼──────┐  ┌───▼────────┐
-│ PostgreSQL │  │  Redis   │  │ Vector DB │  │   S3/      │
-│  (Metadata)│  │ (Cache)  │  │(Embeddings)│  │ MinIO      │
-└────────────┘  └──────────┘  └───────────┘  └────────────┘
+[User Browser]
+      |
+[Frontend (React + Monaco)]
+      |
+[API Gateway / FastAPI]
+      |
++-----+---------------------------+--------------------+
+|     |                           |                    |
+|  Indexer Worker            LLM Orchestrator      Sandbox Runner
+|  (clone, chunk, embed)     (RAG + prompt manager) (apply patch + run tests)
+|     |                           |                    |
+|  Vector DB -------------------->|                    |
+|     |                          DB & Audit            |
++-----+---------------------------+--------------------+
+      |
+[Postgres (metadata)]   [Redis (cache & queue)]   [S3/MinIO (artifacts)]
 ```
 
-### Component Responsibilities
-
-1. **API Gateway**: Request routing, authentication, rate limiting, and load balancing
-2. **Code Analysis Service**: Static code analysis, error detection, and code metrics
-3. **AI Debug Service**: AI-powered debugging, fix suggestions, and code explanations
-4. **Doc Generation Service**: Automatic documentation generation from code
-5. **GitHub Service**: Repository cloning, analysis, and integration
-6. **Multilingual Service**: Translation and multilingual explanation generation
-7. **Message Queue**: Asynchronous task processing for long-running operations
-8. **PostgreSQL**: User data, session history, and analysis results
-9. **Redis**: Session caching and real-time debugging state
-10. **Vector DB**: Code embeddings for semantic search and similarity analysis
-11. **S3/MinIO**: Storage for generated documentation and large codebases
-
-## Components and Interfaces
-
-### 1. API Gateway
-
-**Technology**: Kong or AWS API Gateway
-
-**Responsibilities**:
-- Route requests to appropriate microservices
-- Handle authentication using JWT tokens
-- Implement rate limiting (100 requests/minute per user)
-- Provide API versioning support
-
-**Endpoints**:
-```
-POST   /api/v1/auth/login
-POST   /api/v1/auth/register
-POST   /api/v1/code/analyze
-POST   /api/v1/code/debug
-POST   /api/v1/code/explain
-POST   /api/v1/docs/generate
-POST   /api/v1/github/analyze
-POST   /api/v1/session/create
-GET    /api/v1/session/{id}
-POST   /api/v1/session/{id}/message
-PUT    /api/v1/user/preferences
-```
-
-### 2. Code Analysis Service
-
-**Technology**: Python with Tree-sitter for parsing
-
-**Core Modules**:
-
-**Parser Module**:
-```python
-class CodeParser:
-    def parse(code: str, language: str) -> AST
-    def extract_functions(ast: AST) -> List[Function]
-    def extract_classes(ast: AST) -> List[Class]
-    def extract_imports(ast: AST) -> List[Import]
-```
-
-**Error Detector Module**:
-```python
-class ErrorDetector:
-    def detect_syntax_errors(ast: AST) -> List[SyntaxError]
-    def detect_logical_errors(ast: AST) -> List[LogicalError]
-    def detect_security_vulnerabilities(ast: AST) -> List[SecurityIssue]
-    def detect_runtime_errors(ast: AST) -> List[RuntimeError]
-```
-
-**Metrics Calculator Module**:
-```python
-class MetricsCalculator:
-    def calculate_complexity(ast: AST) -> ComplexityMetrics
-    def calculate_loc(code: str) -> int
-    def detect_code_smells(ast: AST) -> List[CodeSmell]
-    def calculate_duplication(files: List[File]) -> DuplicationReport
-```
-
-**Interfaces**:
-```python
-@dataclass
-class AnalysisRequest:
-    code: str
-    language: str
-    analysis_type: List[str]  # ['errors', 'metrics', 'security']
-    user_id: str
-
-@dataclass
-class AnalysisResult:
-    errors: List[Error]
-    metrics: CodeMetrics
-    security_issues: List[SecurityIssue]
-    analysis_time: float
-```
-
-### 3. AI Debug Service
-
-**Technology**: Python with LangChain and OpenAI/Anthropic APIs
-
-**Core Modules**:
-
-**LLM Manager**:
-```python
-class LLMManager:
-    def initialize_model(model_name: str) -> LLM
-    def generate_fix_suggestion(error: Error, context: CodeContext) -> FixSuggestion
-    def explain_code(code: str, complexity_level: str) -> Explanation
-    def generate_productivity_suggestions(code: str) -> List[Suggestion]
-```
-
-**Context Builder**:
-```python
-class ContextBuilder:
-    def build_error_context(error: Error, code: str) -> ErrorContext
-    def build_code_context(code: str, ast: AST) -> CodeContext
-    def extract_relevant_snippets(code: str, line_number: int, radius: int) -> str
-```
-
-**Fix Generator**:
-```python
-class FixGenerator:
-    def generate_fixes(error: Error, context: ErrorContext) -> List[FixSuggestion]
-    def rank_fixes(fixes: List[FixSuggestion]) -> List[FixSuggestion]
-    def apply_fix(code: str, fix: FixSuggestion) -> str
-```
-
-**Interfaces**:
-```python
-@dataclass
-class DebugRequest:
-    code: str
-    errors: List[Error]
-    language: str
-    user_level: str  # 'beginner', 'intermediate', 'advanced'
-    session_id: Optional[str]
-
-@dataclass
-class DebugResponse:
-    fix_suggestions: List[FixSuggestion]
-    explanations: List[Explanation]
-    learning_resources: List[Resource]
-```
-
-### 4. Documentation Generation Service
-
-**Technology**: Python with language-specific documentation parsers
-
-**Core Modules**:
-
-**Doc Extractor**:
-```python
-class DocExtractor:
-    def extract_function_docs(function: Function) -> FunctionDoc
-    def extract_class_docs(class_def: Class) -> ClassDoc
-    def extract_module_docs(module: Module) -> ModuleDoc
-    def extract_api_docs(routes: List[Route]) -> APIDoc
-```
-
-**Doc Generator**:
-```python
-class DocGenerator:
-    def generate_markdown(docs: Documentation) -> str
-    def generate_html(docs: Documentation) -> str
-    def generate_pdf(docs: Documentation) -> bytes
-    def generate_jsdoc(docs: Documentation) -> str
-```
-
-**Template Engine**:
-```python
-class TemplateEngine:
-    def load_template(format: str, language: str) -> Template
-    def render(template: Template, data: dict) -> str
-```
-
-**Interfaces**:
-```python
-@dataclass
-class DocGenerationRequest:
-    code: str
-    language: str
-    output_format: str  # 'markdown', 'html', 'pdf', 'jsdoc'
-    include_examples: bool
-    include_diagrams: bool
-
-@dataclass
-class Documentation:
-    title: str
-    overview: str
-    functions: List[FunctionDoc]
-    classes: List[ClassDoc]
-    modules: List[ModuleDoc]
-    generated_at: datetime
-```
-
-### 5. GitHub Service
-
-**Technology**: Python with PyGithub library
-
-**Core Modules**:
-
-**Repository Manager**:
-```python
-class RepositoryManager:
-    def clone_repository(url: str, auth_token: Optional[str]) -> Repository
-    def analyze_structure(repo: Repository) -> RepoStructure
-    def extract_readme(repo: Repository) -> str
-    def analyze_commits(repo: Repository) -> CommitAnalysis
-```
-
-**Dependency Analyzer**:
-```python
-class DependencyAnalyzer:
-    def detect_dependencies(repo: Repository) -> List[Dependency]
-    def build_dependency_graph(deps: List[Dependency]) -> Graph
-    def detect_vulnerabilities(deps: List[Dependency]) -> List[Vulnerability]
-```
-
-**Interfaces**:
-```python
-@dataclass
-class GitHubAnalysisRequest:
-    repository_url: str
-    auth_token: Optional[str]
-    analysis_depth: str  # 'quick', 'standard', 'deep'
-    include_history: bool
-
-@dataclass
-class RepositoryAnalysis:
-    summary: str
-    languages: Dict[str, float]  # language -> percentage
-    structure: RepoStructure
-    quality_issues: List[Issue]
-    contributor_guide: str
-```
-
-### 6. Multilingual Service
-
-**Technology**: Python with IndicTrans2 for Indian languages
-
-**Core Modules**:
-
-**Translation Engine**:
-```python
-class TranslationEngine:
-    def translate(text: str, source_lang: str, target_lang: str) -> str
-    def translate_technical_term(term: str, target_lang: str) -> TranslatedTerm
-    def preserve_code_snippets(text: str) -> Tuple[str, List[CodeSnippet]]
-```
-
-**Language Detector**:
-```python
-class LanguageDetector:
-    def detect_language(text: str) -> str
-    def get_user_preference(user_id: str) -> str
-    def set_user_preference(user_id: str, language: str) -> None
-```
-
-**Terminology Manager**:
-```python
-class TerminologyManager:
-    def load_technical_glossary(language: str) -> Dict[str, str]
-    def add_term(english_term: str, translations: Dict[str, str]) -> None
-    def get_translation(term: str, target_lang: str) -> Optional[str]
-```
-
-**Interfaces**:
-```python
-@dataclass
-class TranslationRequest:
-    text: str
-    target_language: str
-    preserve_technical_terms: bool
-    context: Optional[str]
-
-@dataclass
-class TranslatedContent:
-    translated_text: str
-    technical_terms: List[TechnicalTerm]
-    confidence_score: float
-```
-
-### 7. Session Manager
-
-**Technology**: Python with Redis for state management
-
-**Core Modules**:
-
-**Session Handler**:
-```python
-class SessionHandler:
-    def create_session(user_id: str) -> Session
-    def get_session(session_id: str) -> Optional[Session]
-    def update_session(session_id: str, data: dict) -> None
-    def close_session(session_id: str) -> None
-```
-
-**Context Manager**:
-```python
-class ContextManager:
-    def add_message(session_id: str, message: Message) -> None
-    def get_conversation_history(session_id: str) -> List[Message]
-    def get_relevant_context(session_id: str, query: str) -> Context
-```
-
-**Interfaces**:
-```python
-@dataclass
-class Session:
-    session_id: str
-    user_id: str
-    created_at: datetime
-    last_active: datetime
-    context: Dict[str, Any]
-    conversation_history: List[Message]
-
-@dataclass
-class Message:
-    role: str  # 'user' or 'assistant'
-    content: str
-    timestamp: datetime
-    metadata: Dict[str, Any]
-```
-
-## Data Models
-
-### Core Entities
-
-**User**:
-```python
-@dataclass
-class User:
-    user_id: str
-    email: str
-    name: str
-    language_preference: str
-    skill_level: str  # 'beginner', 'intermediate', 'advanced'
-    created_at: datetime
-    preferences: UserPreferences
-```
-
-**Error**:
-```python
-@dataclass
-class Error:
-    error_id: str
-    error_type: str  # 'syntax', 'logical', 'runtime', 'security'
-    severity: str  # 'critical', 'high', 'medium', 'low'
-    line_number: int
-    column_number: int
-    message: str
-    code_snippet: str
-```
-
-**FixSuggestion**:
-```python
-@dataclass
-class FixSuggestion:
-    suggestion_id: str
-    error_id: str
-    description: str
-    code_diff: str
-    confidence_score: float
-    explanation: str
-    learning_resources: List[str]
-```
-
-**CodeMetrics**:
-```python
-@dataclass
-class CodeMetrics:
-    lines_of_code: int
-    cyclomatic_complexity: int
-    maintainability_index: float
-    code_duplication_percentage: float
-    test_coverage: Optional[float]
-    dependencies_count: int
-```
-
-### Database Schema
-
-**PostgreSQL Tables**:
-
-```sql
-CREATE TABLE users (
-    user_id UUID PRIMARY KEY,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    name VARCHAR(255),
-    language_preference VARCHAR(50) DEFAULT 'en',
-    skill_level VARCHAR(50) DEFAULT 'beginner',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE analysis_history (
-    analysis_id UUID PRIMARY KEY,
-    user_id UUID REFERENCES users(user_id),
-    code_hash VARCHAR(64),
-    language VARCHAR(50),
-    analysis_type VARCHAR(50),
-    result JSONB,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE sessions (
-    session_id UUID PRIMARY KEY,
-    user_id UUID REFERENCES users(user_id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_active TIMESTAMP,
-    status VARCHAR(50),
-    context JSONB
-);
-
-CREATE TABLE error_patterns (
-    pattern_id UUID PRIMARY KEY,
-    user_id UUID REFERENCES users(user_id),
-    error_type VARCHAR(100),
-    frequency INT DEFAULT 1,
-    last_occurred TIMESTAMP,
-    resolved BOOLEAN DEFAULT FALSE
-);
-```
-
-## Correctness Properties
-
-*A property is a characteristic or behavior that should hold true across all valid executions of a system—essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
-
-### Property 1: Error Detection Completeness
-
-*For any* valid Code_Snippet in a supported language, when analyzed by the Error Detector, all syntax errors present in the code should be included in the returned Error_Report.
-
-**Validates: Requirements 2.1**
-
-### Property 2: Fix Suggestion Validity
-
-*For any* Error_Report generated by the system, each Fix_Suggestion should produce syntactically valid code when applied to the original Code_Snippet.
-
-**Validates: Requirements 1.3**
-
-### Property 3: Language Preference Consistency
-
-*For any* User with a set Language_Preference, all generated Explanations and Error_Reports within a single session should be in the same target language.
-
-**Validates: Requirements 6.2, 6.5**
-
-### Property 4: Translation Preservation
-
-*For any* technical term in an Explanation, when translated to a target language, translating back to English should preserve the original meaning or return the original English term.
-
-**Validates: Requirements 6.3, 6.4**
-
-### Property 5: Documentation Completeness
-
-*For any* Code_Snippet containing functions with docstrings or comments, the generated Documentation should include entries for all public functions and classes.
-
-**Validates: Requirements 4.2, 4.3**
-
-### Property 6: Session Context Persistence
-
-*For any* Debug_Session, when a User asks a follow-up question referencing a previous Error_Report, the System should have access to the complete conversation history from that session.
-
-**Validates: Requirements 9.2, 9.5**
-
-### Property 7: Error Prioritization Ordering
-
-*For any* Error_Report containing multiple errors, the errors should be ordered such that all critical severity errors appear before high severity, high before medium, and medium before low.
-
-**Validates: Requirements 1.4**
-
-### Property 8: Code Metrics Invariant
-
-*For any* Code_Snippet, calculating code metrics multiple times without modifying the code should produce identical CodeMetrics results.
-
-**Validates: Requirements 5.4**
-
-### Property 9: Repository Analysis Timeout
-
-*For any* GitHub Repository with up to 10,000 lines of code, the analysis should complete within 60 seconds or return a partial result with a timeout indicator.
-
-**Validates: Requirements 8.1**
-
-### Property 10: Security Vulnerability Detection
-
-*For any* Code_Snippet containing a known OWASP Top 10 vulnerability pattern, the System should detect and report it with appropriate severity rating.
-
-**Validates: Requirements 10.1, 10.5**
-
-### Property 11: Explanation Complexity Adaptation
-
-*For any* Code_Snippet, when generating Explanations for different skill levels (beginner vs advanced), the beginner explanation should contain more detailed step-by-step breakdowns and simpler vocabulary.
-
-**Validates: Requirements 3.5**
-
-### Property 12: API Response Time
-
-*For any* Code_Snippet under 1000 lines, the analysis and error detection should complete within 5 seconds.
-
-**Validates: Requirements 1.1**
-
-### Property 13: Export Format Validity
-
-*For any* generated Documentation, when exported to a specified format (Markdown, HTML, PDF), the output should be valid according to that format's specification.
-
-**Validates: Requirements 12.3**
-
-### Property 14: Multilingual Term Consistency
-
-*For any* technical term that appears multiple times in an Explanation, all occurrences should use the same translation in the target language.
-
-**Validates: Requirements 6.5**
-
-### Property 15: GitHub Authentication Handling
-
-*For any* private GitHub Repository, when provided with valid authentication credentials, the System should successfully clone and analyze the repository; when credentials are invalid, it should return an authentication error without attempting analysis.
-
-**Validates: Requirements 8.7**
-
-## Error Handling
-
-### Error Categories
-
-1. **User Input Errors**:
-   - Invalid code syntax (return detailed syntax error)
-   - Unsupported programming language (return list of supported languages)
-   - Malformed API requests (return 400 with validation errors)
-
-2. **System Errors**:
-   - LLM API failures (retry with exponential backoff, fallback to cached responses)
-   - Database connection failures (return 503, queue request for retry)
-   - Service timeout (return partial results with timeout indicator)
-
-3. **External Service Errors**:
-   - GitHub API rate limiting (return 429 with retry-after header)
-   - Translation service failures (fallback to English)
-   - Authentication failures (return 401 with clear error message)
-
-### Error Response Format
-
-```json
-{
-  "error": {
-    "code": "ERROR_CODE",
-    "message": "Human-readable error message",
-    "details": {
-      "field": "specific_field",
-      "reason": "detailed_reason"
-    },
-    "timestamp": "2024-01-15T10:30:00Z",
-    "request_id": "uuid"
-  }
-}
-```
-
-### Retry Strategy
-
-- **Transient Errors**: Retry up to 3 times with exponential backoff (1s, 2s, 4s)
-- **Rate Limiting**: Respect retry-after headers, queue requests
-- **Timeout Errors**: Return partial results if available, otherwise fail fast
-
-### Fallback Mechanisms
-
-1. **LLM Failures**: Use rule-based error detection and cached fix patterns
-2. **Translation Failures**: Return content in English with apology message
-3. **GitHub Failures**: Analyze local code only, skip repository features
-4. **Database Failures**: Use in-memory cache for session data
-
-## Testing Strategy
-
-### Unit Testing
-
-**Focus Areas**:
-- Code parser correctness for each supported language
-- Error detection accuracy for known error patterns
-- Translation accuracy for technical terms
-- Documentation generation for standard code structures
-- API endpoint request/response validation
-
-**Tools**: pytest, Jest, JUnit (language-specific)
-
-**Coverage Target**: Minimum 80% code coverage
-
-### Property-Based Testing
-
-**Configuration**: Minimum 100 iterations per property test using Hypothesis (Python), fast-check (TypeScript)
-
-**Property Tests**:
-
-1. **Error Detection Completeness** (Property 1)
-   - Generate random code with injected syntax errors
-   - Verify all injected errors are detected
-   - **Feature: ai-bharat-doc-debug-assistant, Property 1: Error Detection Completeness**
-
-2. **Fix Suggestion Validity** (Property 2)
-   - Generate random errors and fix suggestions
-   - Apply fixes and verify resulting code parses successfully
-   - **Feature: ai-bharat-doc-debug-assistant, Property 2: Fix Suggestion Validity**
-
-3. **Language Preference Consistency** (Property 3)
-   - Generate random session with multiple requests
-   - Verify all responses use the same target language
-   - **Feature: ai-bharat-doc-debug-assistant, Property 3: Language Preference Consistency**
-
-4. **Translation Preservation** (Property 4)
-   - Generate random technical terms
-   - Translate to target language and back to English
-   - Verify meaning preservation
-   - **Feature: ai-bharat-doc-debug-assistant, Property 4: Translation Preservation**
-
-5. **Documentation Completeness** (Property 5)
-   - Generate random code with functions and classes
-   - Verify all public entities appear in documentation
-   - **Feature: ai-bharat-doc-debug-assistant, Property 5: Documentation Completeness**
-
-6. **Session Context Persistence** (Property 6)
-   - Generate random debug sessions with multiple messages
-   - Verify conversation history is maintained
-   - **Feature: ai-bharat-doc-debug-assistant, Property 6: Session Context Persistence**
-
-7. **Error Prioritization Ordering** (Property 7)
-   - Generate random error lists with mixed severities
-   - Verify errors are sorted by severity correctly
-   - **Feature: ai-bharat-doc-debug-assistant, Property 7: Error Prioritization Ordering**
-
-8. **Code Metrics Invariant** (Property 8)
-   - Generate random code snippets
-   - Calculate metrics multiple times
-   - Verify results are identical
-   - **Feature: ai-bharat-doc-debug-assistant, Property 8: Code Metrics Invariant**
-
-9. **Security Vulnerability Detection** (Property 10)
-   - Generate code with known vulnerability patterns
-   - Verify vulnerabilities are detected with correct severity
-   - **Feature: ai-bharat-doc-debug-assistant, Property 10: Security Vulnerability Detection**
-
-10. **Export Format Validity** (Property 13)
-    - Generate random documentation
-    - Export to each format
-    - Verify format validity using validators
-    - **Feature: ai-bharat-doc-debug-assistant, Property 13: Export Format Validity**
-
-### Integration Testing
-
-**Focus Areas**:
-- End-to-end API workflows (submit code → receive analysis → apply fix)
-- Service-to-service communication
-- Database transactions and rollbacks
-- Message queue processing
-- Authentication and authorization flows
-
-**Tools**: Postman/Newman, pytest with fixtures, Testcontainers
-
-### Performance Testing
-
-**Metrics**:
-- API response time (p50, p95, p99)
-- Throughput (requests per second)
-- Error rate under load
-- Resource utilization (CPU, memory, network)
-
-**Tools**: Apache JMeter, Locust, k6
-
-**Targets**:
-- Code analysis: < 5 seconds for 1000 lines
-- Repository analysis: < 60 seconds for 10,000 lines
-- API throughput: > 100 requests/second
-- Error rate: < 1% under normal load
-
-### Security Testing
-
-**Focus Areas**:
-- Input validation and sanitization
-- SQL injection prevention
-- XSS prevention in generated documentation
-- Authentication bypass attempts
-- Rate limiting effectiveness
-
-**Tools**: OWASP ZAP, Burp Suite, Bandit (Python security linter)
-
-### Multilingual Testing
-
-**Focus Areas**:
-- Translation accuracy for technical terms
-- Character encoding handling (Unicode, Devanagari, Tamil script)
-- Right-to-left language support (if applicable)
-- Language detection accuracy
-
-**Test Data**: Curated dataset of technical explanations in all supported languages
-
-### Accessibility Testing
-
-**Focus Areas**:
-- Generated HTML documentation meets WCAG 2.1 AA standards
-- API responses include proper content-type headers
-- Error messages are screen-reader friendly
-
-**Tools**: axe-core, WAVE, Lighthouse
+
+
+## 5. Component responsibilities
+
+### 5.1 Frontend
+- Provide code explorer with syntax-highlighted viewer (Monaco) and selection tools.  
+- Explain pane with tiers (simple → developer → deep) and docstring preview.  
+- Debug workspace: paste stacktrace, upload screenshot, show candidate file-lines, timeline control, patch preview and sandbox control.  
+- Consent UI showing precisely which text will be sent to an external model (redacted preview).  
+- Real-time updates via WebSocket for long-running jobs.
+
+### 5.2 API layer
+- Authentication and session management.  
+- Expose endpoints for: repo ingest, explain, debug, run-sandbox, create-pr-draft, index status, job streaming.  
+- Request validation, rate limiting, and per-org quota enforcement.
+
+### 5.3 Indexer & ingestion
+- Clone/sync repository (shallow clones, incremental fetch).  
+- Parse source files with language-aware parser, extract logical units (functions, classes, modules).  
+- Chunk large units into token-bounded slices with overlap.  
+- Deduplicate using content hash.  
+- Batch embeddings and write to vector store with metadata (repo, path, commit, line ranges).
+
+### 5.4 Retrieval & RAG orchestrator
+- On query, retrieve top-K vectors filtered by repo and language.  
+- Construct context package (retrieved chunks, recent commits, linter outputs).  
+- Use prompt templates to call model and request evidence pointers (file:line) and structured responses.
+
+### 5.5 LLM prompt manager
+- Maintain versioned prompt templates for docstring, explain, patch generation, test generation, and repro minimization.  
+- Add instruction patterns to force citation of supporting lines.  
+- Log prompt version and sanitized context to audit logs.
+
+### 5.6 Debugging correlator & delta-minimizer
+- Parse stacktrace frames and map filenames/line numbers to indexed chunks.  
+- Score candidates by semantic similarity, frame proximity, and recent commit relevance.  
+- Minimize failing input using iterative reduction (binary/ddmin) while validating reproduction in sandbox.
+
+### 5.7 Patch generator & confidence auditor
+- Produce unified diff patches from LLM output.  
+- Apply patch inside sandbox branch and run targeted tests.  
+- Compute confidence by combining: sandbox pass result, linter delta, diff size, test coverage effect, and evidence quality.
+
+### 5.8 Sandbox runner
+- Launch ephemeral container (Docker; k8s Jobs in production).  
+- Apply patch, install dependencies in isolated venv, run specified test commands, capture artifacts.  
+- Enforce CPU/memory/time limits and restrict external network by default.  
+- Stream logs to the frontend and persist results to object storage.
+
+### 5.9 Persistence & cache
+- Postgres for users, repos, job metadata, audit logs.  
+- Redis for caching embeddings lookups, rate-limits, and as message broker for workers.  
+- Vector DB (managed or self-hosted) for embeddings.  
+- Object store for logs, test reports, and generated documentation.
+
+### 5.10 Observability & security
+- Metrics (Prometheus), dashboards (Grafana), error monitoring (Sentry), structured logs (Loki/ELK).  
+- Audit trail for every AI action: prompt version, sanitized context hash, user confirmation id, model id, response id.
+
+## 6. Data models (selected)
+
+### User
+- id, email, name, role, language_preference, created_at
+
+### Repo
+- id, owner, git_url, default_branch, last_indexed_commit, visibility, indexing_status
+
+### Chunk
+- id, repo_id, file_path, start_line, end_line, token_count, hash, created_at
+
+### Embedding metadata
+- chunk_id, vector_id, namespace, inserted_at
+
+### Patch
+- id, repo_id, author_id, diff_text, created_at, sandbox_job_id, confidence_score, evidence_json
+
+### Job
+- id, type, status, progress, started_at, finished_at, artifacts_uri
+
+### Audit
+- id, user_id, action_type, redacted_context_id, model_version, timestamp
+
+## 7. API surface (examples)
+
+- `POST /api/repos/connect`  
+  Body: `{ "git_url": "...", "auth_token": "..." }` → returns `{ "repo_id", "job_id" }`
+
+- `POST /api/explain`  
+  Body: `{ "repo_id", "file_path"?, "code_snippet"?, "detail_level": "simple|dev|deep" }` → returns `{ "summary", "docstring", "evidence": [{path, start_line, end_line}] }`
+
+- `POST /api/debug`  
+  Body: `{ "repo_id", "stacktrace", "logs"?, "screenshot_id"? }` → returns `{ "candidates": [{path, line, score}], "suggested_patch": null | diff }`
+
+- `POST /api/run-sandbox`  
+  Body: `{ "repo_id", "patch_diff", "commands": ["pytest tests/..."], "timeout_sec": 300 }` → returns `{ "job_id" }` then use WebSocket `/ws/jobs/{job_id}` to stream logs.
+
+- `POST /api/pr-draft` (requires explicit write consent)  
+  Body: `{ "repo_id", "branch_base", "patch_diff", "title", "body" }` → returns `{ "pr_url" }`
+
+## 8. Indexing and chunking strategy
+- Extract functions and class bodies as primary chunk units.  
+- For large bodies, apply sliding-window chunking with overlap to preserve context.  
+- Compute sha256 on normalized code text to identify duplicates.  
+- Batch size for embeddings tuned to provider limits (e.g., 100–512).  
+- Maintain mapping from chunk → commit to enable incremental updates; reindex only changed files on new commit.
+
+## 9. Prompt design (guidelines & templates)
+- Use system-role instructions to define output format (JSON, evidence array).  
+- Always request precise citations (file:line ranges) for assertions.  
+- Limit context token length—include highest relevance retrieved chunks and static analysis summary.  
+- Example docstring template (conceptual):  
+  - System: "You are an expert software doc writer."  
+  - User: "Given this code snippet, return a Google-style docstring and up to 3 evidence lines (path:start-end) that justify the summary."  
+
+Store templates with a version id and include in audit entries.
+
+## 10. Delta minimizer (approach)
+- Iteratively remove or shorten parts of failing input then re-run the test until failure no longer reproduces; backtrack to last failing input.  
+- Use intelligent heuristics to prioritize likely irrelevant blocks (large sections of input, optional fields, long strings).  
+- Parallelize candidate checks across sandbox workers but limit concurrency to control cost.  
+- Cache test outcomes for specific input hashes to avoid redundant runs.
+
+## 11. Patch Confidence scoring (formula)
+Combine weighted signals into a single score (0–100):
+- sandbox_test_pass_weight (e.g., 50%) — full points if targeted tests pass after patch  
+- linter_delta_weight (e.g., 15%) — fewer warnings => higher score  
+- diff_size_weight (e.g., 10%) — smaller diffs preferred  
+- evidence_quality_weight (e.g., 15%) — presence and closeness of cited lines  
+- historical_success_weight (e.g., 10%) — model past-patch reliability
+
+Map numeric score to categories: High (≥80), Medium (50–79), Low (<50). Always present underlying signals to the user.
+
+## 12. Security & privacy controls
+- Display exact redacted snippet preview before any external model call; require explicit consent button.  
+- Apply regex-based masking for tokens, keys, PEM blocks, and long hex strings prior to logging or external transmission.  
+- Use minimal OAuth scopes; store tokens encrypted and rotate periodically.  
+- Network policy: sandbox containers default to no outbound network; allow exceptions with explicit consent and strict controls.  
+- Provide a per-org data retention policy and an API to purge all indexed data.
+
+## 13. Observability & operational metrics
+- Track: API latency, LLM call latency & token usage, embedding throughput, indexing job durations, sandbox job durations/success rate, queue lengths.  
+- Configure alerts for: worker backlog growth, unexpected error spikes, high token usage, sandbox abuse.  
+- Store prompts and sanitized context hashes for troubleshooting and compliance.
+
+## 14. Testing strategy
+
+### Unit tests
+- Parser correctness, chunking, deduping logic, prompt template rendering, API validation.
+
+### Integration tests
+- Indexing pipeline end-to-end against small sample repos; retrieval → RAG call → expected fields.
+
+### E2E tests
+- Frontend flows: connect repo → explain → draft patch → run sandbox (mocked or local).
+
+### Property checks
+- Ensure deterministic chunking for identical inputs; ensure prompt versions are recorded.
+
+### Load & performance
+- Simulate indexing of large repo (100k+ LOC) for throughput tuning.  
+- Measure sandbox concurrency and enforce quotas.
+
+## 15. Deployment & infra
+- Dev: docker-compose for local development (Postgres, Redis, MinIO, local vector DB emulator).  
+- Staging/Prod: Kubernetes cluster with separate node pools (API, workers, sandbox, optional GPU pool for self-hosted models).  
+- IaC: Terraform for cloud resources (VPC, databases, object store, managed vector DB if used).  
+- CI: GitHub Actions for tests, lint, build, and deploy pipelines.  
+- Secrets: secure store (Vault / cloud KMS).
+
+## 16. Operational constraints & quotas
+- Per-org token and sandbox-minute quotas to control costs.  
+- Rate limits on API endpoints (configurable by plan).  
+- Max sandbox concurrency per org to prevent noisy neighbors.
+
+## 17. Roadmap (phased)
+- Phase 0 (MVP): basic ingest, explain via hosted LLM, stacktrace-to-candidate mapping, simple sandbox runner.  
+- Phase 1: vector store retrieval & RAG, delta minimizer, evidence enforcement, confidence scoring.  
+- Phase 2: time-travel replay visuals, multi-repo impact analysis, PR draft automation.  
+- Phase 3: on-prem model hosting, fine-tuning with approved corpora, enterprise compliance features.
+
+## 18. Acceptance criteria (demoable)
+- Generate a contextual README for sample repo and show mental-model map.  
+- Given a prepared failing stacktrace, identify the correct file:line and produce a patch that passes sandbox tests for the demo repo.  
+- Show consent flow and audit entry for an LLM call.  
+- Display confidence breakdown for a generated patch.
+
+## 19. Appendix A — example artifacts to include in repo
+- `docker-compose.yml` for local services.  
+- `backend/` skeleton with FastAPI endpoints stubbed.  
+- `indexer/` prototype showing Tree-sitter chunking logic.  
+- `prompts/` versioned prompt templates.  
+- `docs/sample-repos/` with curated buggy cases and expected fixes.  
+- `scripts/demo.sh` to run a recorded fallback demo.
+
+## 20. Appendix B — glossary
+- **Chunk**: a contiguous code segment (function/class or sliding window) used for embedding.  
+- **RAG**: retrieval-augmented generation — use of vector retrieval to provide context to an LLM.  
+- **Sandbox**: isolated environment to apply patches and run tests safely.  
+- **Evidence pointer**: a (file_path, start_line, end_line) tuple referencing source lines used by the model to justify output.
+
+---
+
+End of design.md
+
 
