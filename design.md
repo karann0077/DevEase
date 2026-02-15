@@ -1,9 +1,9 @@
 # design.md
 
-# DevInsight AI — System Design Document
+# DevEase — System Design Document
 
 ## 1. Project summary
-DevInsight AI is a web-based platform that helps developers understand codebases faster and resolve runtime issues with confidence. It combines automatic documentation generation and powerful debugging aids (stacktrace correlation, minimal repro creation, runtime replay, and sandbox-validated patches) into a single workflow. The emphasis is on reproducibility, evidence-backed fixes, and human-in-the-loop safety.
+DevEase AI is a web-based platform that helps developers understand codebases faster and resolve runtime issues with confidence. It combines automatic documentation generation and powerful debugging aids (stacktrace correlation, minimal repro creation, runtime replay, and sandbox-validated patches) into a single workflow. The emphasis is on reproducibility, evidence-backed fixes, and human-in-the-loop safety.
 
 ## 2. Objectives and measurable targets
 - Produce readable, context-accurate docstrings and README drafts for selected code units.  
@@ -252,6 +252,5 @@ Map numeric score to categories: High (≥80), Medium (50–79), Low (<50). Alwa
 
 ---
 
-End of design.md
 
 
